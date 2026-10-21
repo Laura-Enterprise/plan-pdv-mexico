@@ -1,0 +1,67 @@
+name: Probar acceso a comOS
+# Prueba manual (Run workflow). Solo imprime códigos de estado y tamaños:
+# nunca imprime la llave ni datos de personas.
+on:
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  probar:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Probar la llave de comOS
+        env:
+          COMOS_API_KEY: ${{ secrets.COMOS_API_KEY }}
+        run: |
+          python3 - <<'PY'
+          import os, json, datetime, urllib.request, urllib.error
+          key = os.environ.get("COMOS_API_KEY", "")
+          print("Llave presente:", bool(key), "· largo:", len(key))
+          bogota = datetime.timezone(datetime.timedelta(hours=-5))
+          hoy = datetime.datetime.now(bogota).replace(hour=0, minute=0, second=0, microsecond=0)
+          ini = hoy.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+          fin = (hoy + datetime.timedelta(days=1, milliseconds=-1)).astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.999Z")
+          bases = ["https://llamadapro.app", "https://backend-06j0.onrender.com"]
+          cabeceras = {
+              "Bearer": {"Authorization": "Bearer " + key},
+              "X-API-Key": {"X-API-Key": key},
+              "x-api-key": {"x-api-key": key},
+              "api-key": {"api-key": key},
+          }
+          def llamar(base, ruta, metodo, hdr, cuerpo=None):
+              h = {"Accept": "application/json", "User-Agent": "probar-comos/1.0"}
+              h.update(hdr)
+              data = None
+              if cuerpo is not None:
+                  data = json.dumps(cuerpo).encode()
+                  h["Content-Type"] = "application/json"
+              req = urllib.request.Request(base + ruta, data=data, headers=h, method=metodo)
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as r:
+                      txt = r.read().decode("utf-8", "replace")
+                      return r.status, txt
+              except urllib.error.HTTPError as e:
+                  return e.code, e.read().decode("utf-8", "replace")
+              except Exception as e:
+                  return "ERR", str(e)[:120]
+          for base in bases:
+              for nombre, hdr in cabeceras.items():
+                  st, txt = llamar(base, "/api/reports/advanced/config", "GET", hdr)
+                  print(f"GET config | {base} | {nombre} -> {st} ({len(txt)} caracteres)")
+          print("--- Consulta del reporte de hoy (solo conteos) ---")
+          cuerpo = {"dateRange": {"startDate": ini, "endDate": fin}}
+          for base in bases:
+              for nombre, hdr in cabeceras.items():
+                  st, txt = llamar(base, "/api/reports/advanced/agent-performance/query", "POST", hdr, cuerpo)
+                  info = ""
+                  if st == 200:
+                      try:
+                          j = json.loads(txt)
+                          filas = j if isinstance(j, list) else next((v for v in j.values() if isinstance(v, list)), [])
+                          info = f"filas={len(filas)} · campos={sorted(filas[0].keys())[:14] if filas and isinstance(filas[0], dict) else '-'}"
+                      except Exception as e:
+                          info = "respuesta no es JSON"
+                  elif st != "ERR":
+                      info = "mensaje: " + txt[:160].replace("\n", " ")
+                  print(f"POST agent-performance | {base} | {nombre} -> {st} {info}")
+          PY
