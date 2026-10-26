@@ -20,6 +20,7 @@ import json
 import os
 import re
 import sys
+import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -30,6 +31,7 @@ from google.oauth2 import service_account
 SPREADSHEET_ID = "13nW6Pi83FM7e5N-Ctg8O5dbCEE1hvW2MNpuQwj62z3M"
 INDEX = os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html")
 TZ = ZoneInfo("America/Argentina/Buenos_Aires")
+ESPERAS = (5, 15, 30)  # segundos de espera entre reintentos
 
 MESES_ES = {
     1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
@@ -53,9 +55,21 @@ def sesion_google():
 
 def api(headers, path, **params):
     url = f"https://sheets.googleapis.com/v4/spreadsheets/{SPREADSHEET_ID}{path}"
-    resp = requests.get(url, headers=headers, params=params, timeout=30)
-    resp.raise_for_status()
-    return resp.json()
+    # Google a veces no responde a tiempo: se reintenta solo ante timeouts,
+    # errores de conexión y 429/5xx. Un 403 (permisos) falla de inmediato.
+    for espera in (*ESPERAS, None):
+        try:
+            resp = requests.get(url, headers=headers, params=params, timeout=90)
+            if resp.status_code not in (429, 500, 502, 503, 504):
+                resp.raise_for_status()
+                return resp.json()
+            error = f"HTTP {resp.status_code}"
+        except (requests.ConnectionError, requests.Timeout) as e:
+            error = type(e).__name__
+        if espera is None:
+            raise RuntimeError(f"Google Sheets no respondió tras {len(ESPERAS) + 1} intentos ({error}).")
+        print(f"Google Sheets falló ({error}); reintento en {espera} s.")
+        time.sleep(espera)
 
 
 def leer_pestana(headers, hoy):
